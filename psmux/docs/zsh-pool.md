@@ -59,7 +59,7 @@ This separate output preserves the executable already serving existing
 host-cwd test sessions. The current workspace's profile command is:
 
 ```json
-"commandline": "%USERPROFILE%\\Desktop\\psmux-zsh-launcher\\psmux\\target\\pool-final\\release\\psmux.exe -L zsh-pool zsh-pool"
+"commandline": "%USERPROFILE%\\Desktop\\wt-zsh-fastlauncher\\psmux\\target\\pool-final\\release\\psmux.exe -L zsh-pool zsh-pool"
 ```
 
 `startingDirectory` may remain the Desktop. Native Duplicate Tab / Duplicate

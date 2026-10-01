@@ -76,8 +76,7 @@ held for the client's whole lifetime. See `psmux/docs/zsh-pool.md`.
 
 [`patches/psmux-fork-vs-7f070fe.patch`](patches/psmux-fork-vs-7f070fe.patch)
 contains the complete unified diff of this fork against the upstream commit,
-including the added files (they were staged with `git add -N` before the diff
-was taken, so they appear as new-file hunks).
+including the added files as new-file hunks.
 
 To rebase these changes onto the upstream tree:
 

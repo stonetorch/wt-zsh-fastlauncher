@@ -38,10 +38,10 @@ Microsoft documents the OSC and native duplicate actions here:
 https://learn.microsoft.com/en-us/windows/terminal/tutorials/new-tab-same-directory
 
 From PowerShell, open an isolated test tab with this command (the paths below
-assume a checkout at `%USERPROFILE%\Desktop\psmux-zsh-launcher`):
+assume a checkout at `%USERPROFILE%\Desktop\wt-zsh-fastlauncher`):
 
 ```powershell
-wt.exe -w new new-tab --title host-cwd-test -d %USERPROFILE%\Desktop powershell.exe -NoProfile -ExecutionPolicy Bypass -File %USERPROFILE%\Desktop\psmux-zsh-launcher\verify-wt-host-cwd.ps1
+wt.exe -w new new-tab --title host-cwd-test -d %USERPROFILE%\Desktop powershell.exe -NoProfile -ExecutionPolicy Bypass -File %USERPROFILE%\Desktop\wt-zsh-fastlauncher\verify-wt-host-cwd.ps1
 ```
 
 In Zsh, change directory with `builtin cd ~/Desktop/test111`. Use
@@ -54,8 +54,8 @@ independently of shell initialization. Repeat while a TUI is in the foreground.
 Cleanup, after closing the test tabs:
 
 ```powershell
-$env:PSMUX_DATA_DIR = "$env:USERPROFILE\Desktop\psmux-zsh-launcher\psmux\target\host-cwd-wt"
-& "$env:USERPROFILE\Desktop\psmux-zsh-launcher\psmux\target\release\psmux.exe" -L hostcwd-wt kill-server
+$env:PSMUX_DATA_DIR = "$env:USERPROFILE\Desktop\wt-zsh-fastlauncher\psmux\target\host-cwd-wt"
+& "$env:USERPROFILE\Desktop\wt-zsh-fastlauncher\psmux\target\release\psmux.exe" -L hostcwd-wt kill-server
 Remove-Item Env:PSMUX_DATA_DIR
 ```
 

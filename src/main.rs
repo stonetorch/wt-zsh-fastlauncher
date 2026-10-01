@@ -16,7 +16,7 @@ struct Pane {
 
 fn main() {
     if let Err(err) = run() {
-        eprintln!("psmux-zsh: {err}");
+        eprintln!("wt-zsh-fastlauncher: {err}");
         std::process::exit(1);
     }
 }
@@ -253,7 +253,7 @@ fn exit_with(status: ExitStatus) -> ! {
 
 fn debug(message: String) {
     if env::var_os("PSMUX_ZSH_DEBUG").is_some() {
-        eprintln!("[psmux-zsh] {message}");
+        eprintln!("[wt-zsh-fastlauncher] {message}");
     }
 }
 

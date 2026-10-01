@@ -1,4 +1,4 @@
-# psmux-zsh
+# wt-zsh-fastlauncher
 
 > **Unofficial fork.** This project is built on top of
 > [psmux](https://github.com/psmux/psmux) (MIT, Copyright (c) 2025 Josh) and
@@ -63,6 +63,41 @@ After changing psmux config, restart the psmux server once:
 psmux kill-server
 ```
 
+## Optional: Ctrl+D detaches instead of closing the shell
+
+By default `Ctrl+D` on an empty prompt runs `exit`: the shell process ends, the
+pooled session is destroyed, and the next tab has to pay for a cold start. This
+widget turns that keystroke into a detach instead, so the session stays alive
+and stays reusable — jobs, history, aliases, and shell variables survive with it.
+
+Add to `~/.zshrc`, after the idle marker block above:
+
+```zsh
+if [[ -n "$PSMUX_SESSION" ]]; then
+    setopt IGNORE_EOF   # required: lets an empty line reach the widget below
+
+    _psmux_ctrl_d() {
+        # Only release on an empty command line with no pending multi-line input.
+        if [[ -z "$BUFFER" && -z "$PREBUFFER" ]]; then
+            if ! psmux detach-client; then
+                zle -M 'psmux detach failed; session kept'
+            fi
+        else
+            # With text typed, keep the usual delete-char / list-choices behavior.
+            zle .delete-char-or-list
+        fi
+    }
+
+    zle -N _psmux_ctrl_d
+    bindkey -M emacs '^D' _psmux_ctrl_d
+    bindkey -M viins '^D' _psmux_ctrl_d
+fi
+```
+
+`psmux` must be on your `PATH`. If it is not, replace it with a full MSYS path
+to the binary, for example
+`/c/Users/<you>/AppData/Local/psmux/psmux.exe`.
+
 ## Build
 
 From PowerShell:
@@ -75,14 +110,14 @@ cargo build --release
 Binary:
 
 ```text
-target\release\psmux-zsh.exe
+target\release\wt-zsh-fastlauncher.exe
 ```
 
 Copy it somewhere permanent, for example:
 
 ```powershell
 New-Item -ItemType Directory -Force "$HOME\bin" | Out-Null
-Copy-Item .\target\release\psmux-zsh.exe "$HOME\bin\psmux-zsh.exe"
+Copy-Item .\target\release\wt-zsh-fastlauncher.exe "$HOME\bin\wt-zsh-fastlauncher.exe"
 ```
 
 ## Windows Terminal profile
@@ -92,7 +127,7 @@ Example:
 ```json
 {
     "closeOnExit": "always",
-    "commandline": "%USERPROFILE%\\bin\\psmux-zsh.exe",
+    "commandline": "%USERPROFILE%\\bin\\wt-zsh-fastlauncher.exe",
     "guid": "{f6290734-5462-4308-ac88-c661d3469211}",
     "hidden": false,
     "icon": "%LOCALAPPDATA%\\TerminalIcons\\zsh.png",
@@ -136,7 +171,7 @@ Temporarily:
 
 ```powershell
 $env:PSMUX_ZSH_DEBUG = "1"
-.\psmux-zsh.exe
+.\wt-zsh-fastlauncher.exe
 ```
 
 The launcher prints which psmux it chose, the Windows/MSYS paths, and whether it reused or created a

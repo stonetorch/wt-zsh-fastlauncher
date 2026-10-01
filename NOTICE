@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-psmux-zsh is built on top of, and redistributes, the third-party software listed
+wt-zsh-fastlauncher is built on top of, and redistributes, the third-party software listed
 below. Each component is used under its own license, and every license text is
 preserved verbatim in the location noted. Do not remove those files.
 
@@ -76,7 +76,7 @@ texts ship with the fork and must be preserved alongside the code.
 
 ## Disclaimer
 
-psmux-zsh is an unofficial fork. It is not affiliated with, endorsed by, or
+wt-zsh-fastlauncher is an unofficial fork. It is not affiliated with, endorsed by, or
 sponsored by the psmux project or its authors. The names of the upstream
 projects and their authors are used only to describe the origin of this work.
 Neither MIT license grants any trademark rights.

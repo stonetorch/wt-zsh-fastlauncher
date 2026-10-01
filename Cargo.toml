@@ -1,5 +1,5 @@
 [package]
-name = "psmux-zsh"
+name = "wt-zsh-fastlauncher"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"

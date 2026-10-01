@@ -1,6 +1,6 @@
 diff --git a/docs/host-cwd.md b/docs/host-cwd.md
 new file mode 100644
-index 0000000..39268e6
+index 0000000..38e35fb
 --- /dev/null
 +++ b/docs/host-cwd.md
 @@ -0,0 +1,63 @@
@@ -44,10 +44,10 @@ index 0000000..39268e6
 +https://learn.microsoft.com/en-us/windows/terminal/tutorials/new-tab-same-directory
 +
 +From PowerShell, open an isolated test tab with this command (the paths below
-+assume a checkout at `%USERPROFILE%\Desktop\psmux-zsh-launcher`):
++assume a checkout at `%USERPROFILE%\Desktop\wt-zsh-fastlauncher`):
 +
 +```powershell
-+wt.exe -w new new-tab --title host-cwd-test -d %USERPROFILE%\Desktop powershell.exe -NoProfile -ExecutionPolicy Bypass -File %USERPROFILE%\Desktop\psmux-zsh-launcher\verify-wt-host-cwd.ps1
++wt.exe -w new new-tab --title host-cwd-test -d %USERPROFILE%\Desktop powershell.exe -NoProfile -ExecutionPolicy Bypass -File %USERPROFILE%\Desktop\wt-zsh-fastlauncher\verify-wt-host-cwd.ps1
 +```
 +
 +In Zsh, change directory with `builtin cd ~/Desktop/test111`. Use
@@ -60,8 +60,8 @@ index 0000000..39268e6
 +Cleanup, after closing the test tabs:
 +
 +```powershell
-+$env:PSMUX_DATA_DIR = "$env:USERPROFILE\Desktop\psmux-zsh-launcher\psmux\target\host-cwd-wt"
-+& "$env:USERPROFILE\Desktop\psmux-zsh-launcher\psmux\target\release\psmux.exe" -L hostcwd-wt kill-server
++$env:PSMUX_DATA_DIR = "$env:USERPROFILE\Desktop\wt-zsh-fastlauncher\psmux\target\host-cwd-wt"
++& "$env:USERPROFILE\Desktop\wt-zsh-fastlauncher\psmux\target\release\psmux.exe" -L hostcwd-wt kill-server
 +Remove-Item Env:PSMUX_DATA_DIR
 +```
 +
@@ -69,7 +69,7 @@ index 0000000..39268e6
 +actions. The native Duplicate/Split check remains a separate manual step.
 diff --git a/docs/zsh-pool.md b/docs/zsh-pool.md
 new file mode 100644
-index 0000000..80b75ed
+index 0000000..ea0a5d9
 --- /dev/null
 +++ b/docs/zsh-pool.md
 @@ -0,0 +1,91 @@
@@ -134,7 +134,7 @@ index 0000000..80b75ed
 +host-cwd test sessions. The current workspace's profile command is:
 +
 +```json
-+"commandline": "%USERPROFILE%\\Desktop\\psmux-zsh-launcher\\psmux\\target\\pool-final\\release\\psmux.exe -L zsh-pool zsh-pool"
++"commandline": "%USERPROFILE%\\Desktop\\wt-zsh-fastlauncher\\psmux\\target\\pool-final\\release\\psmux.exe -L zsh-pool zsh-pool"
 +```
 +
 +`startingDirectory` may remain the Desktop. Native Duplicate Tab / Duplicate
