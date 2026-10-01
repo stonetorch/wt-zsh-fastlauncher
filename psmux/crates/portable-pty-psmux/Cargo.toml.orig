@@ -1,0 +1,46 @@
+[package]
+name = "portable-pty-psmux"
+version = "0.9.7"
+authors = ["Wez Furlong"]
+edition = "2018"
+
+description = "Cross platform pty interface (psmux fork with ConPTY PASSTHROUGH_MODE + WIN32_INPUT_MODE + RESIZE_QUIRK patches)"
+documentation = "https://docs.rs/portable-pty"
+license = "MIT"
+repository = "https://github.com/psmux/portable-pty-patched"
+include = ["src/**/*", "LICENSE.md", "README.md", "Cargo.toml", "examples/**/*"]
+
+[features]
+default = []
+serde_support = ["serde", "serde_derive"]
+
+[dependencies]
+anyhow = "1.0.104"
+downcast-rs = "2.0.2"
+filedescriptor = "0.8.3"
+libc = "0.2.189"
+log = "0.4.34"
+nix = { version = "0.31.3", features = ["term", "fs"] }
+serde = { version = "1.0.229", optional = true }
+serde_derive = { version = "1.0.229", optional = true }
+serial2 = "0.2.38"
+shell-words = "1.1.1"
+
+[dev-dependencies]
+futures = "0.3.34"
+smol = "2.0.2"
+
+[target.'cfg(windows)'.dependencies]
+lazy_static = "1.5.0"
+shared_library = "0.1.9"
+winreg = "0.56.0"
+winapi = { version = "0.3.9", features = [
+    "winuser",
+    "consoleapi",
+    "handleapi",
+    "fileapi",
+    "namedpipeapi",
+    "synchapi",
+    "libloaderapi",
+    "winnt",
+] }

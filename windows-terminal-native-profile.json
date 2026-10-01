@@ -1,0 +1,9 @@
+{
+    "closeOnExit": "always",
+    "commandline": "%LOCALAPPDATA%\\psmux\\psmux.exe -L zsh-pool zsh-pool",
+    "guid": "{f6290734-5462-4308-ac88-c661d3469211}",
+    "hidden": false,
+    "icon": "%LOCALAPPDATA%\\TerminalIcons\\zsh.png",
+    "name": "Zsh Tmux",
+    "startingDirectory": "%USERPROFILE%\\Desktop"
+}

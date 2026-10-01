@@ -1,0 +1,82 @@
+# Third-Party Notices
+
+psmux-zsh is built on top of, and redistributes, the third-party software listed
+below. Each component is used under its own license, and every license text is
+preserved verbatim in the location noted. Do not remove those files.
+
+---
+
+## psmux
+
+| | |
+| --- | --- |
+| Source | https://github.com/psmux/psmux |
+| Upstream commit | `7f070fec5f1022d4995e3808f34666d829aee0e5` |
+| License | MIT |
+| Copyright | Copyright (c) 2025 Josh |
+| License text | [`psmux/LICENSE`](psmux/LICENSE) |
+
+The `psmux/` directory in this repository is a modified copy of the upstream
+project at the commit above. The modifications were made by **stonetorch** (2026)
+and are itemized in [`FORK-NOTES.md`](FORK-NOTES.md); the complete diff is in
+[`patches/psmux-fork-vs-7f070fe.patch`](patches/psmux-fork-vs-7f070fe.patch).
+
+Files modified relative to upstream:
+
+```
+src/cli.rs
+src/client.rs
+src/help.rs
+src/main.rs
+src/server/connection.rs
+src/server/helpers.rs
+src/server/mod.rs
+src/types.rs
+tests-rs/test_issue615_warm_claim_cwd_hint.rs
+```
+
+Files added that are not present upstream:
+
+```
+src/host_cwd.rs
+src/zsh_pool.rs
+docs/host-cwd.md
+docs/zsh-pool.md
+examples/verify_host_cwd.rs
+examples/verify_zsh_pool.rs
+scripts/update-install.ps1
+```
+
+---
+
+## psmux's vendored dependencies
+
+psmux vendors two of its own dependencies under `psmux/crates/`. Their license
+texts ship with the fork and must be preserved alongside the code.
+
+### portable-pty-psmux
+
+| | |
+| --- | --- |
+| Derived from | https://github.com/wez/wezterm |
+| License | MIT |
+| Copyright | Copyright (c) 2018 Wez Furlong |
+| License text | [`psmux/crates/portable-pty-psmux/LICENSE.md`](psmux/crates/portable-pty-psmux/LICENSE.md) |
+
+### vt100-psmux
+
+| | |
+| --- | --- |
+| Derived from | https://github.com/doy/vt100-rust |
+| License | MIT |
+| Copyright | Copyright (c) 2016 Jesse Luehrs |
+| License text | [`psmux/crates/vt100-psmux/LICENSE`](psmux/crates/vt100-psmux/LICENSE) |
+
+---
+
+## Disclaimer
+
+psmux-zsh is an unofficial fork. It is not affiliated with, endorsed by, or
+sponsored by the psmux project or its authors. The names of the upstream
+projects and their authors are used only to describe the origin of this work.
+Neither MIT license grants any trademark rights.

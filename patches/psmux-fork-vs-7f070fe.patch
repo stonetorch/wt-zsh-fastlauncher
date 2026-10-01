@@ -1,0 +1,1750 @@
+diff --git a/docs/host-cwd.md b/docs/host-cwd.md
+new file mode 100644
+index 0000000..39268e6
+--- /dev/null
++++ b/docs/host-cwd.md
+@@ -0,0 +1,63 @@
++# Active pane cwd forwarding to Windows Terminal
++
++This local change adds `host_cwd` to both server render-state paths. The client
++announces changes using `ESC ] 9 ; 9 ; <Windows path> ESC \\`, which Windows
++Terminal uses for its native Duplicate Tab and Duplicate Pane actions.
++
++The active pane's OSC 7 / OSC 9;9 announcement takes precedence after conversion
++through the existing Windows path translator. Without a usable announcement,
++the existing `pane_current_path` query supplies the fallback. This precedence is
++necessary for MSYS2: a foreground program can report the wrapper's original
++Win32 startup cwd even after Zsh changes its POSIX cwd. The announcement retains
++the shell's directory while a TUI runs. Background pane announcements cannot
++change the host cwd. Status visibility and `set-titles` do not affect forwarding.
++
++The client emits on first attach and on changes, suppresses duplicates, retries
++failed writes, and rejects empty paths and control characters. The optional
++wire field remains compatible with older clients and servers; an old server
++cannot provide the new behavior, so testing requires a newly started server.
++
++## Automated checks
++
++```powershell
++cargo test --bin psmux host_cwd
++cargo build --release --bin psmux
++cargo run --example verify_host_cwd -- target/release/psmux.exe
++```
++
++The example uses a private data directory under `target/host-cwd-live-<pid>` and
++a unique `-L` namespace, then cleans up only that namespace. It tests server JSON
++and actual attached-client output through ConPTY, including active pane/window
++switches, background cwd changes, Unicode/spaces, status/title disabled, real
++MSYS2 UCRT64 Zsh when installed at `C:\msys64`, an alternate-screen foreground
++program, and a fresh attach. The MSYS2 check expects the user's `zsh-idle` hook.
++
++## Native Windows Terminal check
++
++Microsoft documents the OSC and native duplicate actions here:
++https://learn.microsoft.com/en-us/windows/terminal/tutorials/new-tab-same-directory
++
++From PowerShell, open an isolated test tab with this command (the paths below
++assume a checkout at `%USERPROFILE%\Desktop\psmux-zsh-launcher`):
++
++```powershell
++wt.exe -w new new-tab --title host-cwd-test -d %USERPROFILE%\Desktop powershell.exe -NoProfile -ExecutionPolicy Bypass -File %USERPROFILE%\Desktop\psmux-zsh-launcher\verify-wt-host-cwd.ps1
++```
++
++In Zsh, change directory with `builtin cd ~/Desktop/test111`. Use
++WT's native Ctrl+Shift+D (Duplicate Tab), then Alt+Shift+D (the user's configured
++Duplicate Pane). Check `pwd` in each new Zsh. Each copy must start in `test111`.
++The script logs each process's inherited Windows cwd in
++`target/host-cwd-wt/launches.jsonl`, so the host's inheritance can also be checked
++independently of shell initialization. Repeat while a TUI is in the foreground.
++
++Cleanup, after closing the test tabs:
++
++```powershell
++$env:PSMUX_DATA_DIR = "$env:USERPROFILE\Desktop\psmux-zsh-launcher\psmux\target\host-cwd-wt"
++& "$env:USERPROFILE\Desktop\psmux-zsh-launcher\psmux\target\release\psmux.exe" -L hostcwd-wt kill-server
++Remove-Item Env:PSMUX_DATA_DIR
++```
++
++Automated ConPTY results verify the emitted protocol, not WT's native GUI
++actions. The native Duplicate/Split check remains a separate manual step.
+diff --git a/docs/zsh-pool.md b/docs/zsh-pool.md
+new file mode 100644
+index 0000000..80b75ed
+--- /dev/null
++++ b/docs/zsh-pool.md
+@@ -0,0 +1,91 @@
++# Native persistent MSYS2 Zsh pool
++
++Run `psmux -L zsh-pool zsh-pool` from Windows Terminal. The current Windows cwd
++is the requested directory. `-c <directory>` overrides it. `MSYS2_ROOT` defaults
++to `C:\msys64`; new sessions use the established `msys2_shell.cmd -ucrt64
++-defterm -no-start -here -use-full-path -shell zsh` startup.
++
++The allocator runs inside psmux and continues through its normal native attach
++or new-session path. It does not start an external PowerShell or Rust launcher
++and does not invoke psmux subprocesses to list, paste, send keys, or attach.
++
++## Reuse contract
++
++The shell opts in with these existing hooks; no changes are required:
++
++```zsh
++if [[ -n "$PSMUX_SESSION" ]]; then
++    autoload -Uz add-zsh-hook
++    _psmux_mark_idle() {
++        print -Pn '\e]2;zsh-idle\a'
++        if [[ -n "$WT_SESSION" ]]; then
++            local winpwd
++            winpwd="$(cygpath -w "$PWD")"
++            printf '\e]9;9;%s\e\\' "$winpwd"
++        fi
++    }
++    _psmux_mark_busy() { print -Pn '\e]2;zsh-busy\a'; }
++    add-zsh-hook precmd _psmux_mark_idle
++    add-zsh-hook preexec _psmux_mark_busy
++fi
++```
++
++Only detached `zsh-*` sessions in the selected namespace are considered.
++The server must have exactly one window and one live pane, be in passthrough
++mode, have no floating panes, and have the raw shell title `zsh-idle` outside
++the alternate screen. Attached, busy, dead, complex, and older incompatible
++servers are left intact. A busy detached shell can become reusable when its
++foreground command ends and precmd emits the idle marker.
++
++On reuse, the server rechecks eligibility and writes `builtin cd -- '<MSYS
++directory>' && clear` followed by Enter in one event-loop turn. Paths are
++converted and quoted natively. The allocator waits for a newer parser output
++version, an idle prompt, and the confirmed requested cwd before attaching.
++Shell variables, jobs, aliases, and history stay in the same running shell;
++the visible terminal screen is cleared. A failed or unconfirmed cd reports an
++error and leaves the existing session intact.
++
++An exclusive per-session file handle is held for the client's whole lifetime,
++including creation before attach registration. This prevents concurrent pool
++clients from claiming the same shell. Windows releases the handle on client
++exit or termination; tiny lock files persist and are reused. The server also
++tracks the claiming process and refuses a second live claim. No lock expires
++on a timer while its owner is still alive.
++
++## Windows Terminal profile
++
++Build with `cargo build --release --bin psmux --target-dir target/pool-final`.
++This separate output preserves the executable already serving existing
++host-cwd test sessions. The current workspace's profile command is:
++
++```json
++"commandline": "%USERPROFILE%\\Desktop\\psmux-zsh-launcher\\psmux\\target\\pool-final\\release\\psmux.exe -L zsh-pool zsh-pool"
++```
++
++`startingDirectory` may remain the Desktop. Native Duplicate Tab / Duplicate
++Pane receives the active shell cwd through `host_cwd`. Previously running
++sessions in the default namespace or `.psmux-hostcwd` registry are preserved;
++the new `-L zsh-pool` namespace starts its own pool. Close or detach a new pool
++tab at an idle prompt, then reopen to reuse it. Closing a tab while a command
++is busy leaves that session ineligible until it returns to idle. Configurations
++using `destroy-unattached on` destroy detached sessions and should use `off`
++for persistent pooling.
++
++The compatibility `launch-patched-zsh.cmd` now invokes this native entry as
++well. Pointing the profile directly at psmux removes the cmd wrapper too.
++
++## Validation
++
++```powershell
++cargo test --bin psmux zsh_pool
++cargo test --bin psmux host_cwd
++cargo run --example verify_zsh_pool -- target/pool-final/release/psmux.exe
++cargo run --example verify_host_cwd -- target/pool-final/release/psmux.exe
++```
++
++Live checks use private workspace data directories and unique namespaces.
++The pool harness creates real MSYS2 Zsh shells, preserves a shell variable and
++pane PID across reuse, exercises quoted Unicode cwd, skips attached and busy
++sessions, starts simultaneous clients, and checks reuse after client termination.
++Only test namespaces are cleaned up. It expects the supplied Zsh idle/busy hooks.
++Use `PSMUX_ZSH_DEBUG=1` to log each `create`/`reuse` decision.
+diff --git a/examples/verify_host_cwd.rs b/examples/verify_host_cwd.rs
+new file mode 100644
+index 0000000..eaa9f5c
+--- /dev/null
++++ b/examples/verify_host_cwd.rs
+@@ -0,0 +1,307 @@
++//! Isolated live server + client ConPTY test. Does not use the default registry.
++//! cargo run --example verify_host_cwd -- target/release/psmux.exe
++use portable_pty::{native_pty_system, CommandBuilder, PtySize};
++use std::{
++    io::Read,
++    path::PathBuf,
++    process::Command,
++    sync::{Arc, Mutex},
++    time::{Duration, Instant},
++};
++
++struct Test {
++    exe: PathBuf,
++    data: PathBuf,
++    ns: String,
++}
++impl Test {
++    fn command(&self, args: &[&str]) -> Command {
++        let mut c = Command::new(&self.exe);
++        c.env("PSMUX_DATA_DIR", &self.data)
++            .env("PSMUX_NO_WARM", "1")
++            .args(["-L", &self.ns])
++            .args(args);
++        c
++    }
++    fn run(&self, args: &[&str]) -> String {
++        let out = self.command(args).output().unwrap();
++        assert!(
++            out.status.success(),
++            "{:?}: {}",
++            args,
++            String::from_utf8_lossy(&out.stderr)
++        );
++        String::from_utf8(out.stdout).unwrap().trim().to_owned()
++    }
++    fn wait_cwd(&self, expected: &str) {
++        let deadline = Instant::now() + Duration::from_secs(12);
++        loop {
++            let dump = self.run(&["dump-state", "-t", "cwd"]);
++            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&dump) {
++                if v["host_cwd"].as_str().is_some_and(|s| same(s, expected)) {
++                    return;
++                }
++            }
++            assert!(
++                Instant::now() < deadline,
++                "missing host_cwd {expected}: {dump}"
++            );
++            std::thread::sleep(Duration::from_millis(100));
++        }
++    }
++}
++impl Drop for Test {
++    fn drop(&mut self) {
++        let _ = self.command(&["kill-server"]).output();
++    }
++}
++fn same(a: &str, b: &str) -> bool {
++    a.trim_end_matches('\\')
++        .eq_ignore_ascii_case(b.trim_end_matches('\\'))
++}
++fn wait_osc(bytes: &Arc<Mutex<Vec<u8>>>, path: &str) {
++    let needle = format!("\x1b]9;9;{path}\x1b\\");
++    let deadline = Instant::now() + Duration::from_secs(12);
++    loop {
++        if bytes
++            .lock()
++            .unwrap()
++            .windows(needle.len())
++            .any(|w| w == needle.as_bytes())
++        {
++            return;
++        }
++        assert!(
++            Instant::now() < deadline,
++            "client did not emit OSC 9;9 for {path}"
++        );
++        std::thread::sleep(Duration::from_millis(100));
++    }
++}
++fn main() {
++    let exe = std::fs::canonicalize(std::env::args_os().nth(1).expect("psmux.exe path")).unwrap();
++    let data = std::env::current_dir()
++        .unwrap()
++        .join("target")
++        .join(format!("host-cwd-live-{}", std::process::id()));
++    std::fs::create_dir_all(&data).unwrap();
++    let a = data.join("active space 测试");
++    let b = data.join("background");
++    let c = data.join("background changed");
++    for p in [&a, &b, &c] {
++        std::fs::create_dir_all(p).unwrap();
++    }
++    let a = a.to_str().unwrap();
++    let b = b.to_str().unwrap();
++    let c = c.to_str().unwrap();
++    let t = Test {
++        exe,
++        data: data.clone(),
++        ns: format!("hostcwd-{}", std::process::id()),
++    };
++    let shell = data.join("shell.ps1");
++    std::fs::write(&shell, "function global:prompt { [Environment]::CurrentDirectory = (Get-Location).Path; [Console]::Write(([char]27).ToString() + ']9;9;' + (Get-Location).Path + [char]27 + '\\'); 'cwd-test> ' }\n").unwrap();
++    let shell = shell.to_str().unwrap();
++    t.run(&[
++        "new-session",
++        "-d",
++        "-s",
++        "cwd",
++        "-c",
++        a,
++        "--",
++        "powershell.exe",
++        "-NoProfile",
++        "-NoExit",
++        "-ExecutionPolicy",
++        "Bypass",
++        "-File",
++        shell,
++    ]);
++    t.run(&["set", "-t", "cwd", "status", "off"]);
++    t.run(&["set", "-t", "cwd", "set-titles", "off"]);
++    t.wait_cwd(a);
++    println!("PASS initial dump-state cwd (spaces + Unicode, status/set-titles off)");
++
++    let pair = native_pty_system()
++        .openpty(PtySize {
++            rows: 24,
++            cols: 100,
++            pixel_width: 0,
++            pixel_height: 0,
++        })
++        .unwrap();
++    let mut cmd = CommandBuilder::new(&t.exe);
++    cmd.env("PSMUX_DATA_DIR", &data);
++    cmd.env("PSMUX_NO_WARM", "1");
++    cmd.args(["-L", &t.ns, "attach", "-t", "cwd"]);
++    let mut child = pair.slave.spawn_command(cmd).unwrap();
++    drop(pair.slave);
++    let mut reader = pair.master.try_clone_reader().unwrap();
++    let bytes = Arc::new(Mutex::new(Vec::new()));
++    let collected = bytes.clone();
++    std::thread::spawn(move || {
++        let mut buf = [0u8; 8192];
++        while let Ok(n) = reader.read(&mut buf) {
++            if n == 0 {
++                break;
++            }
++            collected.lock().unwrap().extend_from_slice(&buf[..n]);
++        }
++    });
++    wait_osc(&bytes, a);
++    println!("PASS actual attached client OSC 9;9 bytes");
++    t.run(&[
++        "split-window",
++        "-d",
++        "-t",
++        "cwd:0.0",
++        "-c",
++        b,
++        "--",
++        "powershell.exe",
++        "-NoProfile",
++        "-NoExit",
++        "-ExecutionPolicy",
++        "Bypass",
++        "-File",
++        shell,
++    ]);
++    let deadline = Instant::now() + Duration::from_secs(12);
++    while !t
++        .run(&["capture-pane", "-p", "-t", "cwd:0.1"])
++        .contains("cwd-test>")
++    {
++        assert!(
++            Instant::now() < deadline,
++            "background shell did not reach prompt"
++        );
++        std::thread::sleep(Duration::from_millis(100));
++    }
++    use base64::Engine;
++    let payload = base64::engine::general_purpose::STANDARD
++        .encode(format!("Set-Location -LiteralPath '{c}'"));
++    t.run(&["send-paste", "-t", "cwd:0.1", &payload]);
++    t.run(&["send-keys", "-t", "cwd:0.1", "Enter"]);
++    std::thread::sleep(Duration::from_secs(1));
++    t.wait_cwd(a);
++    assert!(!String::from_utf8_lossy(&bytes.lock().unwrap()).contains(&format!("\x1b]9;9;{c}")));
++    println!("PASS inactive pane cwd cannot overwrite host cwd");
++    t.run(&["select-pane", "-t", "cwd:0.1"]);
++    t.wait_cwd(c);
++    wait_osc(&bytes, c);
++    println!("PASS select-pane updates server state and host OSC");
++    t.run(&[
++        "new-window",
++        "-t",
++        "cwd",
++        "-c",
++        b,
++        "--",
++        "powershell.exe",
++        "-NoProfile",
++        "-NoExit",
++        "-ExecutionPolicy",
++        "Bypass",
++        "-File",
++        shell,
++    ]);
++    t.wait_cwd(b);
++    wait_osc(&bytes, b);
++    println!("PASS active window switch updates host OSC");
++    t.run(&["select-window", "-t", "cwd:0"]);
++    t.wait_cwd(c);
++    if std::path::Path::new(r"C:\msys64\msys2_shell.cmd").is_file() {
++        // Do not allow an earlier window's matching OSC to satisfy this check.
++        bytes.lock().unwrap().clear();
++        t.run(&[
++            "new-window",
++            "-t",
++            "cwd",
++            "-c",
++            b,
++            "--",
++            "cmd.exe",
++            "/d",
++            "/c",
++            r"C:\msys64\msys2_shell.cmd",
++            "-defterm",
++            "-ucrt64",
++            "-no-start",
++            "-here",
++            "-use-full-path",
++            "-shell",
++            "zsh",
++        ]);
++        let deadline = Instant::now() + Duration::from_secs(20);
++        while t.run(&["display-message", "-p", "-t", "cwd:2.0", "#{pane_title}"]) != "zsh-idle" {
++            assert!(Instant::now() < deadline, "MSYS2 Zsh idle marker missing");
++            std::thread::sleep(Duration::from_millis(100));
++        }
++        let msys = format!("/c/{}", c[3..].replace('\\', "/"));
++        let payload =
++            base64::engine::general_purpose::STANDARD.encode(format!("builtin cd -- '{msys}'"));
++        t.run(&["send-paste", "-t", "cwd:2.0", &payload]);
++        t.run(&["send-keys", "-t", "cwd:2.0", "Enter"]);
++        t.wait_cwd(c);
++        wait_osc(&bytes, c);
++        println!("PASS real MSYS2 UCRT64 Zsh cd updates host cwd");
++        let payload = base64::engine::general_purpose::STANDARD
++            .encode("printf '\\e[?1049h'; sleep 4; printf '\\e[?1049l'");
++        t.run(&["send-paste", "-t", "cwd:2.0", &payload]);
++        t.run(&["send-keys", "-t", "cwd:2.0", "Enter"]);
++        let deadline = Instant::now() + Duration::from_secs(3);
++        loop {
++            let dump: serde_json::Value =
++                serde_json::from_str(&t.run(&["dump-state", "-t", "cwd"])).unwrap();
++            if dump["layout"]["alternate_screen"] == true {
++                assert!(
++                    same(dump["host_cwd"].as_str().unwrap(), c),
++                    "alternate-screen host cwd: {} expected {c}",
++                    dump["host_cwd"]
++                );
++                break;
++            }
++            assert!(
++                Instant::now() < deadline,
++                "alternate-screen program did not start"
++            );
++            std::thread::sleep(Duration::from_millis(100));
++        }
++        println!("PASS foreground alternate-screen program retains Zsh cwd");
++    }
++    let _ = child.kill();
++    let _ = child.wait();
++    drop(pair.master);
++    let pair = native_pty_system()
++        .openpty(PtySize {
++            rows: 24,
++            cols: 100,
++            pixel_width: 0,
++            pixel_height: 0,
++        })
++        .unwrap();
++    let mut cmd = CommandBuilder::new(&t.exe);
++    cmd.env("PSMUX_DATA_DIR", &data);
++    cmd.args(["-L", &t.ns, "attach", "-t", "cwd"]);
++    let mut child = pair.slave.spawn_command(cmd).unwrap();
++    drop(pair.slave);
++    let mut reader = pair.master.try_clone_reader().unwrap();
++    let bytes = Arc::new(Mutex::new(Vec::new()));
++    let collected = bytes.clone();
++    std::thread::spawn(move || {
++        let mut buf = [0u8; 8192];
++        while let Ok(n) = reader.read(&mut buf) {
++            if n == 0 {
++                break;
++            }
++            collected.lock().unwrap().extend_from_slice(&buf[..n]);
++        }
++    });
++    wait_osc(&bytes, c);
++    println!("PASS fresh attach reannounces current cwd");
++    let _ = child.kill();
++    let _ = child.wait();
++    drop(pair.master);
++    println!("PASS isolated live test complete; test namespace cleaned on exit");
++}
+diff --git a/examples/verify_zsh_pool.rs b/examples/verify_zsh_pool.rs
+new file mode 100644
+index 0000000..ad8d733
+--- /dev/null
++++ b/examples/verify_zsh_pool.rs
+@@ -0,0 +1,298 @@
++//! Live pool lifecycle checks, private data directory and unique namespace.
++//! cargo run --example verify_zsh_pool -- target/pool-final/release/psmux.exe
++use base64::Engine;
++use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
++use std::{
++    io::{BufRead, Read, Write},
++    path::PathBuf,
++    process::Command,
++    sync::{Arc, Mutex},
++    time::{Duration, Instant},
++};
++
++struct Test {
++    exe: PathBuf,
++    data: PathBuf,
++    ns: String,
++    config: PathBuf,
++}
++impl Test {
++    fn command(&self, args: &[&str]) -> Command {
++        let mut cmd = Command::new(&self.exe);
++        cmd.env("PSMUX_DATA_DIR", &self.data)
++            .env("PSMUX_NO_WARM", "1")
++            .env("PSMUX_SESSION_DEBUG", "1")
++            .args(["-L", &self.ns])
++            .args(args);
++        cmd
++    }
++    fn run(&self, args: &[&str]) -> String {
++        let out = self.command(args).output().unwrap();
++        assert!(
++            out.status.success(),
++            "{args:?}: {}",
++            String::from_utf8_lossy(&out.stderr)
++        );
++        String::from_utf8(out.stdout).unwrap().trim().into()
++    }
++    fn sessions(&self) -> Vec<String> {
++        let out = self
++            .command(&["list-sessions", "-F", "#{session_name}"])
++            .output()
++            .unwrap();
++        if !out.status.success() {
++            return vec![];
++        }
++        String::from_utf8(out.stdout)
++            .unwrap()
++            .lines()
++            .map(str::to_owned)
++            .collect()
++    }
++    fn wait(&self, what: &str, mut condition: impl FnMut() -> bool) {
++        let deadline = Instant::now() + Duration::from_secs(20);
++        loop {
++            if condition() {
++                return;
++            }
++            assert!(Instant::now() < deadline, "timeout: {what}");
++            std::thread::sleep(Duration::from_millis(50));
++        }
++    }
++    fn idle(&self, name: &str, attached: &str) {
++        self.wait("idle shell", || {
++            // Observe detach completion on the server's control socket before
++            // invoking more CLI processes (which also run registry cleanup).
++            self.direct(
++                name,
++                "display-message -p '#{pane_title}|#{session_attached}'\n",
++            )
++            .as_deref()
++                == Some(format!("zsh-idle|{attached}").as_str())
++        });
++    }
++    fn direct(&self, name: &str, line: &str) -> Option<String> {
++        let base = self.data.join(format!("{}__{name}", self.ns));
++        let port: u16 = std::fs::read_to_string(base.with_extension("port"))
++            .ok()?
++            .trim()
++            .parse()
++            .ok()?;
++        let key = std::fs::read_to_string(base.with_extension("key")).ok()?;
++        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).ok()?;
++        stream
++            .set_read_timeout(Some(Duration::from_millis(500)))
++            .ok()?;
++        write!(stream, "AUTH {}\n{line}", key.trim()).ok()?;
++        let mut reader = std::io::BufReader::new(stream);
++        let mut auth = String::new();
++        reader.read_line(&mut auth).ok()?;
++        let mut reply = String::new();
++        reader.read_line(&mut reply).ok()?;
++        Some(reply.trim().into())
++    }
++    fn send(&self, name: &str, command: &str) {
++        // Full session target; never rely on an unqualified pane id.
++        let payload = base64::engine::general_purpose::STANDARD.encode(command);
++        self.run(&["send-paste", "-t", name, &payload]);
++        self.run(&["send-keys", "-t", name, "Enter"]);
++    }
++    fn pool(&self, dir: &str) -> Client {
++        let pair = native_pty_system()
++            .openpty(PtySize {
++                rows: 28,
++                cols: 120,
++                pixel_width: 0,
++                pixel_height: 0,
++            })
++            .unwrap();
++        let mut cmd = CommandBuilder::new(&self.exe);
++        cmd.env("PSMUX_DATA_DIR", &self.data);
++        cmd.env("PSMUX_NO_WARM", "1");
++        cmd.env("PSMUX_ZSH_DEBUG", "1");
++        cmd.env("PSMUX_SERVER_DEBUG", "1");
++        cmd.env("PSMUX_SESSION_DEBUG", "1");
++        cmd.env("WT_SESSION", "isolated-zsh-pool-test");
++        cmd.args([
++            "-L",
++            &self.ns,
++            "-f",
++            self.config.to_str().unwrap(),
++            "zsh-pool",
++            "-c",
++            dir,
++        ]);
++        let child = pair.slave.spawn_command(cmd).unwrap();
++        drop(pair.slave);
++        let mut reader = pair.master.try_clone_reader().unwrap();
++        let bytes = Arc::new(Mutex::new(Vec::new()));
++        let collected = bytes.clone();
++        std::thread::spawn(move || {
++            let mut buf = [0u8; 8192];
++            while let Ok(n) = reader.read(&mut buf) {
++                if n == 0 {
++                    break;
++                }
++                collected.lock().unwrap().extend_from_slice(&buf[..n]);
++            }
++        });
++        Client {
++            child,
++            _master: pair.master,
++            bytes,
++        }
++    }
++}
++impl Drop for Test {
++    fn drop(&mut self) {
++        let _ = self.command(&["kill-server"]).output();
++    }
++}
++struct Client {
++    child: Box<dyn portable_pty::Child + Send + Sync>,
++    _master: Box<dyn MasterPty + Send>,
++    bytes: Arc<Mutex<Vec<u8>>>,
++}
++impl Client {
++    fn text(&self) -> String {
++        String::from_utf8_lossy(&self.bytes.lock().unwrap()).into_owned()
++    }
++}
++impl Drop for Client {
++    fn drop(&mut self) {
++        let _ = self.child.kill();
++        let _ = self.child.wait();
++    }
++}
++
++fn main() {
++    let exe = std::fs::canonicalize(std::env::args_os().nth(1).expect("psmux exe")).unwrap();
++    let data = std::env::current_dir()
++        .unwrap()
++        .join("target")
++        .join(format!("zsh-pool-live-{}", std::process::id()));
++    std::fs::create_dir_all(&data).unwrap();
++    let config = data.join("test.conf");
++    std::fs::write(&config, "set -g status off\nset -g allow-set-title on\nset -g destroy-unattached off\nset -g warm-pool-size 0\n").unwrap();
++    let a = data.join("A");
++    let b = data.join("B 空格 it's");
++    for dir in [&a, &b] {
++        std::fs::create_dir_all(dir).unwrap();
++    }
++    let a = a.to_str().unwrap();
++    let b = b.to_str().unwrap();
++    let t = Test {
++        exe,
++        data: data.clone(),
++        ns: format!("zshpool-{}", std::process::id()),
++        config,
++    };
++
++    let client = t.pool(a);
++    t.wait("first session", || t.sessions().len() == 1);
++    let first = t.sessions()[0].clone();
++    t.idle(&first, "1");
++    let shell_pid = t.run(&["display-message", "-p", "-t", &first, "#{pane_pid}"]);
++    t.send(
++        &first,
++        "export PSMUX_POOL_SENTINEL=kept; print -r -- POOL_SENTINEL_SET",
++    );
++    t.wait("sentinel command", || {
++        t.run(&["capture-pane", "-p", "-t", &first])
++            .contains("POOL_SENTINEL_SET")
++    });
++    t.idle(&first, "1");
++    println!("PASS empty pool creates and attaches real MSYS2 Zsh");
++
++    let attached_other = t.pool(a);
++    t.wait("attached session skipped", || t.sessions().len() == 2);
++    let second = t.sessions().into_iter().find(|n| n != &first).unwrap();
++    t.idle(&second, "1");
++    println!("PASS attached idle session is not reused");
++    drop(attached_other);
++    t.idle(&second, "0");
++    // Keep the other session busy so the detached original is the sole candidate.
++    t.send(&second, "sleep 60");
++    t.wait("second busy", || {
++        t.run(&["display-message", "-p", "-t", &second, "#{pane_title}"]) == "zsh-busy"
++    });
++    drop(client);
++    t.idle(&first, "0");
++
++    let reused = t.pool(b);
++    t.wait("original reused", || {
++        t.run(&["display-message", "-p", "-t", &first, "#{session_attached}"]) == "1"
++    });
++    assert_eq!(t.sessions().len(), 2);
++    assert_eq!(
++        t.run(&["display-message", "-p", "-t", &first, "#{pane_pid}"]),
++        shell_pid
++    );
++    let dump: serde_json::Value =
++        serde_json::from_str(&t.run(&["dump-state", "-t", &first])).unwrap();
++    assert!(dump["host_cwd"]
++        .as_str()
++        .unwrap()
++        .trim_end_matches('\\')
++        .eq_ignore_ascii_case(b));
++    t.send(&first, "print -r -- POOL_SAVED_STATE=$PSMUX_POOL_SENTINEL");
++    t.wait("state survived reuse", || {
++        t.run(&["capture-pane", "-p", "-t", &first])
++            .contains("POOL_SAVED_STATE=kept")
++    });
++    t.idle(&first, "1");
++    assert!(reused.text().contains("reuse "));
++    println!("PASS same shell PID and variables survive reuse; quoted Unicode cwd is correct");
++    println!("PASS detached busy session is skipped");
++
++    drop(reused);
++    t.idle(&first, "0");
++    let left = t.pool(a);
++    let right = t.pool(b);
++    t.wait("concurrent clients", || {
++        t.sessions().len() == 3
++            && t.sessions()
++                .iter()
++                .filter(|n| {
++                    t.run(&["display-message", "-p", "-t", n, "#{session_attached}"]) == "1"
++                })
++                .count()
++                == 2
++    });
++    t.wait("concurrent decisions", || {
++        (left.text().contains("reuse ") || left.text().contains("create "))
++            && (right.text().contains("reuse ") || right.text().contains("create "))
++    });
++    let reuse_count = [&left, &right]
++        .iter()
++        .filter(|c| c.text().contains("reuse "))
++        .count();
++    assert_eq!(
++        reuse_count, 1,
++        "two clients must not claim one detached shell"
++    );
++    println!("PASS simultaneous pool launches claim distinct sessions");
++    drop(left);
++    drop(right);
++    t.idle(&first, "0");
++    // Make the third session busy, then verify a crashed/killed client's lock
++    // has been released and the original shell can be claimed again.
++    let third = t
++        .sessions()
++        .into_iter()
++        .find(|n| n != &first && n != &second)
++        .unwrap();
++    t.idle(&third, "0");
++    t.send(&third, "sleep 60");
++    t.wait("third busy", || {
++        t.run(&["display-message", "-p", "-t", &third, "#{pane_title}"]) == "zsh-busy"
++    });
++    let final_client = t.pool(a);
++    t.wait("released reservation reused", || {
++        t.run(&["display-message", "-p", "-t", &first, "#{session_attached}"]) == "1"
++    });
++    assert_eq!(t.sessions().len(), 3);
++    println!("PASS client termination releases reservation for later reuse");
++    drop(final_client);
++    println!("PASS isolated pool lifecycle complete; test namespace cleaned on exit");
++}
+diff --git a/scripts/update-install.ps1 b/scripts/update-install.ps1
+new file mode 100644
+index 0000000..1d82033
+--- /dev/null
++++ b/scripts/update-install.ps1
+@@ -0,0 +1,79 @@
++# Sync this fork's psmux build into the machine-wide install directory.
++#
++# Run after changing anything under src/, so the copy that PATH and the Windows
++# Terminal "Zsh Tmux" profile point at picks the change up:
++#
++#   pwsh -File scripts/update-install.ps1              # build, then install
++#   pwsh -File scripts/update-install.ps1 -SkipBuild   # install the last build as-is
++#
++# The build target directory matches docs/zsh-pool.md (target\pool-final).
++
++[CmdletBinding()]
++param(
++    # Must match the entry already on your user PATH.
++    [string]$InstallDir = "$env:LOCALAPPDATA\psmux",
++    [string]$TargetDir  = "target\pool-final",
++    [switch]$SkipBuild
++)
++
++$ErrorActionPreference = 'Stop'
++
++$RepoRoot = Split-Path -Parent $PSScriptRoot
++$Binaries = @('psmux.exe', 'pmux.exe', 'tmux.exe')
++
++Push-Location $RepoRoot
++try {
++    if (-not $SkipBuild) {
++        Write-Host "Building psmux (release, --bin psmux, target-dir $TargetDir)..." -ForegroundColor Cyan
++        & cargo build --release --bin psmux --target-dir $TargetDir
++        if ($LASTEXITCODE -ne 0) { throw "cargo build failed with exit code $LASTEXITCODE" }
++    }
++
++    $built = Join-Path $RepoRoot (Join-Path $TargetDir 'release\psmux.exe')
++    if (-not (Test-Path $built)) {
++        throw "built binary not found: $built`nRun without -SkipBuild, or pass the right -TargetDir."
++    }
++
++    New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
++
++    $running = @(Get-Process -Name psmux, pmux, tmux -ErrorAction SilentlyContinue)
++    if ($running.Count -gt 0) {
++        Write-Host ""
++        Write-Host "$($running.Count) psmux process(es) are running." -ForegroundColor Yellow
++        Write-Host "A running server locks its own executable, so overwriting it can fail." -ForegroundColor Yellow
++        Write-Host "If the copy step errors, run 'psmux kill-server' first (ends your psmux sessions)." -ForegroundColor Yellow
++        Write-Host ""
++    }
++
++    foreach ($name in $Binaries) {
++        Copy-Item -Path $built -Destination (Join-Path $InstallDir $name) -Force
++        Write-Host "  $name" -ForegroundColor Green
++    }
++
++    # The source-tree-independent entry point; recreate it if the directory was wiped.
++    $launcher = Join-Path $InstallDir 'launch-zsh-pool.cmd'
++    if (-not (Test-Path $launcher)) {
++        Set-Content -Path $launcher -Encoding ascii -Value @(
++            '@echo off'
++            'setlocal'
++            'rem Stable entry point: lives beside psmux.exe, independent of any source tree.'
++            'rem Native reuse/new-session entry; keep the default registry and isolate by namespace.'
++            '"%~dp0psmux.exe" -L zsh-pool zsh-pool'
++            'exit /b %errorlevel%'
++        )
++        Write-Host "  launch-zsh-pool.cmd (created)" -ForegroundColor Green
++    }
++
++    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
++    if ($userPath -notlike "*$InstallDir*") {
++        Write-Host ""
++        Write-Host "$InstallDir is not on your user PATH; add it or 'psmux' will not resolve." -ForegroundColor Yellow
++    }
++
++    Write-Host ""
++    Write-Host "Done. Installed to $InstallDir" -ForegroundColor Green
++    Write-Host "Sessions already running keep the old binary until the server restarts (psmux kill-server)." -ForegroundColor Gray
++}
++finally {
++    Pop-Location
++}
+diff --git a/src/cli.rs b/src/cli.rs
+index 3dadd7f..fe469dc 100644
+--- a/src/cli.rs
++++ b/src/cli.rs
+@@ -30,6 +30,7 @@ use crate::types::{ParsedTarget, VERSION, build_version_string};
+ /// Entries are `(command, alias, template)`.  Extra psmux aliases that tmux
+ /// does not define are listed in [`EXTRA_ALIASES`].
+ const ARGS_TEMPLATES: &[(&str, &str, &str)] = &[
++    ("zsh-pool", "zsh-pool", "c:"),
+     ("attach-session",        "attach",     "c:dEf:rt:x"),
+     ("bind-key",              "bind",       "nrN:T:"),
+     ("break-pane",            "breakp",     "abdPF:n:s:t:Wx:X:y:Y:"),
+@@ -562,6 +563,7 @@ USAGE:
+ SESSION COMMANDS:
+     (no command)            Start a new session or attach to existing one
+     new-session, new        Create a new session
++    zsh-pool [-c directory] Reuse a detached idle MSYS2 Zsh or create one
+         -s <name>           Session name (default: "default")
+         -d                  Start detached (in background)
+         -n <winname>        Name for the initial window
+@@ -971,6 +973,7 @@ pub fn print_commands() {
+   move-pane (movep)         - Move a pane to another window
+   move-window (movew)       - Move a window to a different index
+   new-session (new)         - Create a new session
++  zsh-pool [-c directory]   - Reuse detached idle MSYS2 Zsh or create one
+   new-window (neww)         - Create a new window
+   next-layout (nextl)       - Cycle to next layout
+   next-window (next)        - Move to the next window
+diff --git a/src/client.rs b/src/client.rs
+index b986284..2b71fb3 100644
+--- a/src/client.rs
++++ b/src/client.rs
+@@ -3213,6 +3213,9 @@ pub fn run_remote(terminal: &mut Terminal<crate::platform::PsmuxBackend>, input:
+         /// iTerm2, etc.) follow the active pane / window title.
+         #[serde(default)]
+         host_title: Option<String>,
++        /// Active pane cwd for host-terminal Duplicate Tab / Split Pane.
++        #[serde(default)]
++        host_cwd: Option<String>,
+         /// Issue #269: OSC 9;4 progress indicator from the active pane,
+         /// formatted as "<state>;<value>".  Client emits OSC 9;4 to its host
+         /// terminal so apps inside a pane (Copilot CLI, build tools) keep
+@@ -3387,6 +3390,7 @@ pub fn run_remote(terminal: &mut Terminal<crate::platform::PsmuxBackend>, input:
+     // Last OSC 0 (host terminal title) value emitted to the host terminal.
+     // Tracked across iterations so we only re-emit when the title changes.
+     let mut last_emitted_host_title: Option<String> = None;
++    let mut last_emitted_host_cwd: Option<String> = None;
+     // Issue #269: last OSC 9;4 (host terminal progress) value emitted.
+     // Same debounce pattern as host_title.
+     let mut last_emitted_host_progress: Option<String> = None;
+@@ -6887,6 +6891,7 @@ pub fn run_remote(terminal: &mut Terminal<crate::platform::PsmuxBackend>, input:
+         // new OSC 0 sequence if it has changed.  Stored as a local so
+         // it survives `state` being moved into its other fields below.
+         let host_title_this_frame: Option<String> = state.host_title.clone();
++        let host_cwd_this_frame = state.host_cwd.clone();
+         // Issue #269: capture host_progress for post-draw OSC 9;4 emit.
+         let host_progress_this_frame: Option<String> = state.host_progress.clone();
+ 
+@@ -8481,6 +8486,14 @@ pub fn run_remote(terminal: &mut Terminal<crate::platform::PsmuxBackend>, input:
+             last_emitted_host_title = host_title_this_frame;
+         }
+ 
++        // Only the server-selected active pane controls the host cwd. This
++        // remains available while a TUI is in the foreground or status is off.
++        let _ = crate::host_cwd::emit_host_cwd(
++            &mut std::io::stdout().lock(),
++            host_cwd_this_frame.as_deref(),
++            &mut last_emitted_host_cwd,
++        );
++
+         // ── Post-draw: forward OSC 9;4 progress (issue #269) ─────────
+         // host_progress is "<state>;<value>" e.g. "1;50" (default, 50%) or
+         // "0;0" (hide).  Re-emit ESC ] 9 ; 4 ; <state> ; <value> ESC \ to
+diff --git a/src/help.rs b/src/help.rs
+index 65fcfa7..a48d7d5 100644
+--- a/src/help.rs
++++ b/src/help.rs
+@@ -492,6 +492,7 @@ const CLI_COMMANDS: &[(&str, &str, &str)] = &[
+     ("kill-session",      "",         "Destroy a session"),
+     ("list-sessions",     "ls",       "List sessions"),
+     ("new-session",       "new",      "Create a new session"),
++    ("zsh-pool",          "",         "Reuse detached idle MSYS2 Zsh; otherwise create one (-c directory)"),
+     ("rename-session",    "rename",   "Rename the current session"),
+     ("switch-client",     "switchc",  "Switch to another session"),
+     // Window
+diff --git a/src/host_cwd.rs b/src/host_cwd.rs
+new file mode 100644
+index 0000000..6790942
+--- /dev/null
++++ b/src/host_cwd.rs
+@@ -0,0 +1,82 @@
++//! Forward the active pane's native cwd to the host terminal (ConEmu OSC 9;9).
++
++use std::io::{self, Write};
++
++/// Empty paths and control characters must never enter an OSC payload.
++pub(crate) fn valid_cwd(cwd: &str) -> bool {
++    !cwd.is_empty() && !cwd.chars().any(char::is_control)
++}
++
++/// A missing value resets the cache so reappearing cwd is announced again.
++/// Cache only successful writes, allowing the next frame to retry an I/O error.
++pub(crate) fn emit_host_cwd(
++    out: &mut impl Write,
++    cwd: Option<&str>,
++    last: &mut Option<String>,
++) -> io::Result<()> {
++    let cwd = cwd.filter(|cwd| valid_cwd(cwd));
++    if cwd == last.as_deref() {
++        return Ok(());
++    }
++    if let Some(cwd) = cwd {
++        write!(out, "\x1b]9;9;{}\x1b\\", cwd)?;
++        out.flush()?;
++    }
++    *last = cwd.map(str::to_owned);
++    Ok(())
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn forwards_unicode_spaces_and_semicolons_with_st_terminator() {
++        let mut out = Vec::new();
++        let mut last = None;
++        emit_host_cwd(&mut out, Some(r"C:\测试 dir;name"), &mut last).unwrap();
++        assert_eq!(out, "\x1b]9;9;C:\\测试 dir;name\x1b\\".as_bytes());
++    }
++
++    #[test]
++    fn debounces_changes_and_reannounces_after_missing_state() {
++        let mut out = Vec::new();
++        let mut last = None;
++        for cwd in [
++            Some(r"C:\A"),
++            Some(r"C:\A"),
++            Some(r"D:\B"),
++            None,
++            Some(r"D:\B"),
++        ] {
++            emit_host_cwd(&mut out, cwd, &mut last).unwrap();
++        }
++        assert_eq!(
++            out,
++            b"\x1b]9;9;C:\\A\x1b\\\x1b]9;9;D:\\B\x1b\\\x1b]9;9;D:\\B\x1b\\"
++        );
++    }
++
++    #[test]
++    fn refuses_empty_and_control_character_payloads() {
++        for cwd in [
++            "",
++            "C:\\bad\x1b]0;injected",
++            "C:\\bad\x07",
++            "C:\\bad\n",
++            "C:\\bad\u{009c}",
++        ] {
++            let mut out = Vec::new();
++            emit_host_cwd(&mut out, Some(cwd), &mut None).unwrap();
++            assert!(out.is_empty());
++        }
++    }
++
++    #[test]
++    fn failed_write_does_not_advance_cache() {
++        let mut last = None;
++        let mut out = io::Cursor::new([0u8; 0]);
++        assert!(emit_host_cwd(&mut out, Some(r"C:\A"), &mut last).is_err());
++        assert_eq!(last, None);
++    }
++}
+diff --git a/src/main.rs b/src/main.rs
+index fbda98d..3cc793e 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -46,6 +46,8 @@ mod pty_trace;
+ mod startup_trace;
+ mod wsl_path;
+ mod terminal_overrides;
++mod host_cwd;
++mod zsh_pool;
+ 
+ use std::io::{self, Write, Read as _, BufRead as _, IsTerminal};
+ use std::time::Duration;
+@@ -868,7 +870,7 @@ fn run_main() -> io::Result<()> {
+     // `-L=foo` first (flag_equals), then `-Lfoo` (attached globals), then
+     // command-level `-tname` (attached target): running attached passes
+     // first would mis-split `-L=foo` into `-L` + `=foo`.
+-    let args: Vec<String> = crate::cli::normalize_attached_target_flag(
++    let mut args: Vec<String> = crate::cli::normalize_attached_target_flag(
+         crate::cli::normalize_attached_global_args(
+             crate::cli::normalize_flag_equals(env::args().collect()),
+         ),
+@@ -942,6 +944,22 @@ fn run_main() -> io::Result<()> {
+         env::set_var("PSMUX_CONFIG_FILE", cf);
+     }
+ 
++    // Keep the reservation handle alive through attach, until this client
++    // detaches/exits. Rewrite into the normal native attach/new-session path.
++    let _zsh_pool_reservation = if let Some(index) = process_command_index(&args)
++        .filter(|&index| args[index] == "zsh-pool")
++    {
++        if control_mode != 0 || precommand_target.is_some() {
++            return Err(io::Error::new(io::ErrorKind::InvalidInput, "zsh-pool does not accept -C or a global -t"));
++        }
++        let prepared = crate::zsh_pool::prepare(&args[index + 1..], l_socket_name.as_deref())?;
++        args.truncate(index);
++        args.extend(prepared.args);
++        prepared.reservation
++    } else {
++        None
++    };
++
+     // Parse -t flag early to set target session for all commands
+     // Supports session:window.pane format (e.g., "dev:0.1")
+     // PSMUX_TARGET_SESSION stores the port file base name (for port file lookup)
+diff --git a/src/server/connection.rs b/src/server/connection.rs
+index f7c9f3e..3213ae5 100644
+--- a/src/server/connection.rs
++++ b/src/server/connection.rs
+@@ -2385,6 +2385,29 @@ match cmd {
+             let _ = tx.send(CtrlReq::RenameSession((*name).to_string()));
+         }
+     }
++    "zsh-pool-claim" | "zsh-pool-ready" => {
++        let (rtx, rrx) = mpsc::channel::<String>();
++        let pid = args.first().and_then(|s| s.parse::<u32>().ok());
++        if let Some(pid) = pid.filter(|pid| *pid != 0) {
++            if cmd == "zsh-pool-claim" {
++                use base64::Engine;
++                let cwd = args.get(1)
++                    .and_then(|s| base64::engine::general_purpose::STANDARD.decode(s).ok())
++                    .and_then(|s| String::from_utf8(s).ok());
++                if let Some(cwd) = cwd {
++                    let _ = tx.send(CtrlReq::ZshPoolClaim(pid, cwd, rtx));
++                } else {
++                    let _ = rtx.send("ERROR: invalid pool cwd\n".into());
++                }
++            } else {
++                let _ = tx.send(CtrlReq::ZshPoolReady(pid, rtx));
++            }
++            if let Ok(resp) = rrx.recv_timeout(std::time::Duration::from_secs(5)) {
++                let _ = write!(write_stream, "{}", resp);
++                let _ = write_stream.flush();
++            }
++        }
++    }
+     "claim-session" => {
+         // Warm-server claim: rename + synchronous response so CLI knows it's done.
+         // Usage: claim-session <name> [<client-cwd>] [-p <priority>] [-e <env-file>] [-n <window-name>]
+diff --git a/src/server/helpers.rs b/src/server/helpers.rs
+index f16b5d7..672c1b9 100644
+--- a/src/server/helpers.rs
++++ b/src/server/helpers.rs
+@@ -184,6 +184,9 @@ pub(crate) struct StatusFormats {
+     /// Expanded `set-titles-string`, or `None` when `set-titles` is off. The
+     /// client turns this into an OSC 0 for its host terminal.
+     pub host_title: Option<String>,
++    /// Active pane cwd, independent of status visibility and set-titles.
++    /// The client emits OSC 9;9 for native host Duplicate Tab / Split Pane.
++    pub host_cwd: Option<String>,
+ }
+ 
+ /// Expand every per-frame status/style format in one guarded pass.
+@@ -229,6 +232,17 @@ pub(crate) fn expand_status_formats(
+                 crate::pane_border::PaneBorderIndicators::default()
+             });
+     StatusFormats {
++        host_cwd: {
++            // MSYS2 foreground programs can retain the wrapper's original
++            // Win32 cwd even after Zsh's POSIX cd. Keep the active shell's
++            // announcement while its TUI is running; never use another pane's.
++            let announced = expand_format("#{pane_path}", app);
++            let cwd = crate::wsl_path::osc_cwd_to_windows(
++                &announced,
++                crate::wsl_path::default_distro(),
++            ).unwrap_or_else(|| expand_format("#{pane_current_path}", app));
++            crate::host_cwd::valid_cwd(&cwd).then_some(cwd)
++        },
+         status_style: expand_format(status_style, app),
+         status_left: expand_format(&app.status_left, app),
+         status_right: expand_format(&app.status_right, app),
+@@ -306,6 +320,18 @@ pub(crate) fn expand_status_formats(
+     }
+ }
+ 
++/// Append the selected active pane's cwd to either render-state path.
++pub(crate) fn append_host_cwd_json(buf: &mut String, cwd: Option<&str>) {
++    if let Some(cwd) = cwd {
++        if buf.ends_with('}') {
++            buf.pop();
++            buf.push_str(",\"host_cwd\":\"");
++            buf.push_str(&json_escape_string(cwd));
++            buf.push_str("\"}");
++        }
++    }
++}
++
+ /// Append typed client-render options to a buffer ending in `}`.
+ ///
+ /// # Errors
+@@ -1052,6 +1078,7 @@ pub(crate) const TMUX_COMMANDS: &[&str] = &[
+     "move-pane (movep)",
+     "move-window (movew)",
+     "new-session (new)",
++    "zsh-pool [-c directory]",
+     "new-window (neww)",
+     "next-layout (nextl)",
+     "next-window (next)",
+diff --git a/src/server/mod.rs b/src/server/mod.rs
+index 9b32368..802befd 100644
+--- a/src/server/mod.rs
++++ b/src/server/mod.rs
+@@ -1689,6 +1689,7 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
+     app.session_group = group_target;
+     // Server starts detached with a reasonable default window size
+     app.attached_clients = 0;
++    let mut zsh_pool_claim: Option<crate::zsh_pool::Claim> = None;
+ 
+     // ── P0: single-server-per-name guard (issue #2) ─────────────────────────
+     // Hold a named mutex keyed on this session's base name for the server's whole
+@@ -2566,6 +2567,7 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
+                 for req in pending {
+                     let mutates_state = !matches!(&req,
+                         CtrlReq::DumpState(..)
++                        | CtrlReq::ZshPoolReady(..)
+                         | CtrlReq::SendText(_)
+                         | CtrlReq::SendKey(_)
+                         | CtrlReq::SendPaste(_)
+@@ -3497,6 +3499,7 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
+                                 combined_buf.push_str("\"}");
+                             }
+                         }
++                        helpers::append_host_cwd_json(&mut combined_buf, sf.host_cwd.as_deref());
+                         // Issue #269: forward OSC 9;4 progress from the active
+                         // pane so the client emits the same sequence to the
+                         // host terminal (Windows Terminal taskbar/tab progress).
+@@ -4508,6 +4511,14 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
+                     env::set_var("PSMUX_TARGET_SESSION", app.port_file_base());
+                     hook_event = Some("after-rename-session");
+                 }
++                CtrlReq::ZshPoolClaim(pid, cwd, resp) => {
++                    let reply = crate::zsh_pool::claim(&mut app, &mut zsh_pool_claim, pid, &cwd);
++                    let _ = resp.send(reply);
++                }
++                CtrlReq::ZshPoolReady(pid, resp) => {
++                    let reply = crate::zsh_pool::ready(&app, zsh_pool_claim.as_ref(), pid);
++                    let _ = resp.send(reply);
++                }
+                 CtrlReq::ClaimSession(name, client_cwd, client_priority, client_env_file, client_window_name, resp) => {
+                     // Guard against clobbering an already-claimed session. Under
+                     // rapid `new-session`, a stale __warm__.port (or OS ephemeral
+@@ -8018,6 +8029,7 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
+                         combined_buf.push_str("\"}");
+                     }
+                 }
++                helpers::append_host_cwd_json(&mut combined_buf, sf.host_cwd.as_deref());
+                 // Issue #269: forward OSC 9;4 progress from the active pane.
+                 if combined_buf.ends_with('}') {
+                     if let Some((s, v)) = helpers::active_pane_progress(&app) {
+diff --git a/src/types.rs b/src/types.rs
+index 1227c47..52adfa2 100644
+--- a/src/types.rs
++++ b/src/types.rs
+@@ -2807,6 +2807,8 @@ pub enum CtrlReq {
+     /// left the session visible under the standby's pool name, and lost the
+     /// name entirely whenever that second request did not land.
+     ClaimSession(String, Option<String>, Option<String>, Option<String>, Option<String>, mpsc::Sender<String>),
++    ZshPoolClaim(u32, String, mpsc::Sender<String>),
++    ZshPoolReady(u32, mpsc::Sender<String>),
+     SwapPane(String),
+     /// swap-pane `-s <src>` `-t <dst>`: swap the two panes named by the RAW
+     /// target specs (issues #442 and #689).  `src` of None is tmux's default
+diff --git a/src/zsh_pool.rs b/src/zsh_pool.rs
+new file mode 100644
+index 0000000..10ed3d2
+--- /dev/null
++++ b/src/zsh_pool.rs
+@@ -0,0 +1,381 @@
++//! Native MSYS2 Zsh session allocator. OSC 2 idle/busy markers opt shells in.
++use crate::types::{AppState, Mode, Node};
++use base64::Engine;
++use std::{
++    env,
++    fs::{File, OpenOptions},
++    io,
++    path::{Path, PathBuf},
++    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
++};
++
++pub(crate) struct Reservation {
++    _file: File,
++    #[cfg(not(windows))]
++    path: PathBuf,
++}
++
++impl Reservation {
++    fn acquire(path: &Path) -> io::Result<Option<Self>> {
++        let mut options = OpenOptions::new();
++        options.read(true).write(true);
++        #[cfg(windows)]
++        {
++            use std::os::windows::fs::OpenOptionsExt;
++            // The kernel releases this exclusive handle on crash. Keep the
++            // tiny file, so no unlink/recreate gap can allow two claimants.
++            options.create(true).truncate(false).share_mode(0);
++        }
++        #[cfg(not(windows))]
++        options.create_new(true);
++        match options.open(path) {
++            Ok(file) => Ok(Some(Self {
++                _file: file,
++                #[cfg(not(windows))]
++                path: path.to_owned(),
++            })),
++            Err(e) if e.kind() == io::ErrorKind::AlreadyExists || e.raw_os_error() == Some(32) => {
++                Ok(None)
++            }
++            Err(e) => Err(e),
++        }
++    }
++}
++
++#[cfg(not(windows))]
++impl Drop for Reservation {
++    fn drop(&mut self) {
++        let _ = std::fs::remove_file(&self.path);
++    }
++}
++
++pub(crate) struct Prepared {
++    pub args: Vec<String>,
++    pub reservation: Option<Reservation>,
++}
++
++fn parse_cwd(args: &[String]) -> io::Result<PathBuf> {
++    let path = match args {
++        [] => env::current_dir()?,
++        [flag, path] if flag == "-c" => PathBuf::from(path),
++        _ => {
++            return Err(io::Error::new(
++                io::ErrorKind::InvalidInput,
++                "usage: psmux [-L namespace] zsh-pool [-c directory]",
++            ))
++        }
++    };
++    let path = if path.is_absolute() {
++        path
++    } else {
++        env::current_dir()?.join(path)
++    };
++    if !path.is_dir() || !crate::host_cwd::valid_cwd(&path.to_string_lossy()) {
++        return Err(io::Error::new(
++            io::ErrorKind::InvalidInput,
++            "zsh-pool cwd must be an existing directory without control characters",
++        ));
++    }
++    // Resolve . / .. and junctions before comparing the shell's confirmed cwd.
++    // canonicalize on Windows returns an extended path; OSC reports normal
++    // drive/UNC syntax, so remove only that transport prefix.
++    let canonical = std::fs::canonicalize(path)?;
++    #[cfg(windows)]
++    {
++        let canonical = canonical.to_string_lossy();
++        if let Some(rest) = canonical.strip_prefix(r"\\?\UNC\") {
++            return Ok(PathBuf::from(format!(r"\\{rest}")));
++        }
++        if let Some(rest) = canonical.strip_prefix(r"\\?\") {
++            return Ok(PathBuf::from(rest));
++        }
++    }
++    Ok(canonical)
++}
++
++pub(crate) fn windows_path_to_msys(path: &str) -> io::Result<String> {
++    let mut path = path.replace('\\', "/");
++    if let Some(rest) = path.strip_prefix("//?/UNC/") {
++        return Ok(format!("//{rest}"));
++    }
++    if let Some(rest) = path.strip_prefix("//?/") {
++        path = rest.to_owned();
++    }
++    let bytes = path.as_bytes();
++    if bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/' {
++        return Ok(format!(
++            "/{}{}",
++            (bytes[0] as char).to_ascii_lowercase(),
++            &path[2..]
++        ));
++    }
++    if path.starts_with("//") {
++        return Ok(path);
++    }
++    Err(io::Error::new(
++        io::ErrorKind::InvalidInput,
++        "zsh-pool requires a Windows drive or UNC cwd",
++    ))
++}
++
++fn shell_quote(text: &str) -> String {
++    format!("'{}'", text.replace('\'', "'\\''"))
++}
++
++fn request(base: &str, line: &str) -> Option<String> {
++    let port: u16 = std::fs::read_to_string(crate::paths::port_file(base))
++        .ok()?
++        .trim()
++        .parse()
++        .ok()?;
++    let key = crate::session::read_session_key(base).ok()?;
++    crate::session::fetch_authed_response(
++        &format!("127.0.0.1:{port}"),
++        &key,
++        line.as_bytes(),
++        Duration::from_millis(300),
++        Duration::from_secs(2),
++    )
++}
++
++pub(crate) fn prepare(args: &[String], namespace: Option<&str>) -> io::Result<Prepared> {
++    let cwd = parse_cwd(args)?.to_string_lossy().into_owned();
++    windows_path_to_msys(&cwd)?;
++    // Preserve the launcher convention, including nested launch protection.
++    for name in [
++        "TMUX",
++        "TMUX_PANE",
++        "PSMUX_SESSION",
++        "PSMUX_ACTIVE",
++        "PSMUX_TARGET_SESSION",
++        "PSMUX_TARGET_FULL",
++    ] {
++        env::remove_var(name);
++    }
++    let pid = std::process::id();
++    let payload = base64::engine::general_purpose::STANDARD.encode(cwd.as_bytes());
++    for base in crate::session::list_session_names_ns(namespace) {
++        let session = namespace
++            .and_then(|ns| base.strip_prefix(&format!("{ns}__")))
++            .unwrap_or(&base);
++        if !session.starts_with("zsh-") {
++            continue;
++        }
++        let lock_path =
++            PathBuf::from(crate::paths::psmux_dir()).join(format!("{base}.zsh-pool.lock"));
++        let Some(reservation) = Reservation::acquire(&lock_path)? else {
++            continue;
++        };
++        match request(&base, &format!("zsh-pool-claim {pid} {payload}\n")).as_deref() {
++            Some("CLAIMED") => {
++                let deadline = Instant::now() + Duration::from_secs(8);
++                loop {
++                    match request(&base, &format!("zsh-pool-ready {pid}\n")).as_deref() {
++                        Some("READY") => break,
++                        Some("WAIT") if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
++                        _ => return Err(io::Error::other(format!("zsh-pool: claimed {session}, but Zsh did not confirm cd to {cwd}; session left intact"))),
++                    }
++                }
++                debug(&format!("reuse {session} cwd={cwd}"));
++                return Ok(Prepared {
++                    args: vec!["attach-session".into(), "-t".into(), session.into()],
++                    reservation: Some(reservation),
++                });
++            }
++            Some(reply) if reply.starts_with("FAILED") => {
++                return Err(io::Error::other(reply.to_owned()))
++            }
++            _ => {} // Busy, attached, incompatible, or stale server: leave intact.
++        }
++    }
++    let root = env::var_os("MSYS2_ROOT")
++        .map(PathBuf::from)
++        .unwrap_or_else(|| PathBuf::from(r"C:\msys64"));
++    let shell = root.join("msys2_shell.cmd");
++    if !shell.is_file() {
++        return Err(io::Error::new(
++            io::ErrorKind::NotFound,
++            format!(
++                "MSYS2 launcher not found: {} (set MSYS2_ROOT)",
++                shell.display()
++            ),
++        ));
++    }
++    let nanos = SystemTime::now()
++        .duration_since(UNIX_EPOCH)
++        .unwrap_or_default()
++        .as_nanos();
++    let name = format!("zsh-{pid}-{nanos}");
++    let data = PathBuf::from(crate::paths::psmux_dir());
++    std::fs::create_dir_all(&data)?;
++    let base = namespace
++        .map(|ns| format!("{ns}__{name}"))
++        .unwrap_or_else(|| name.clone());
++    // Reserve new sessions too: their prompt can become idle before the
++    // creating client registers its attach, so another launch must skip them.
++    let reservation = Reservation::acquire(&data.join(format!("{base}.zsh-pool.lock")))?
++        .ok_or_else(|| io::Error::other("zsh-pool: new session reservation collision"))?;
++    debug(&format!("create {name} cwd={cwd}"));
++    Ok(Prepared {
++        args: vec![
++            "new-session".into(),
++            "-s".into(),
++            name,
++            "-c".into(),
++            cwd,
++            "--".into(),
++            "cmd.exe".into(),
++            "/d".into(),
++            "/c".into(),
++            shell.to_string_lossy().into_owned(),
++            "-defterm".into(),
++            "-ucrt64".into(),
++            "-no-start".into(),
++            "-here".into(),
++            "-use-full-path".into(),
++            "-shell".into(),
++            "zsh".into(),
++        ],
++        reservation: Some(reservation),
++    })
++}
++
++fn debug(message: &str) {
++    if env::var_os("PSMUX_ZSH_DEBUG").is_some() {
++        eprintln!("[psmux zsh-pool] {message}");
++    }
++}
++
++pub(crate) struct Claim {
++    pid: u32,
++    cwd: String,
++    version: u64,
++}
++
++fn idle_pane(app: &AppState) -> Option<&crate::types::Pane> {
++    if !app.session_name.starts_with("zsh-")
++        || app.attached_clients != 0
++        || app.windows.len() != 1
++        || !matches!(app.mode, Mode::Passthrough)
++    {
++        return None;
++    }
++    let win = &app.windows[0];
++    if !win.floating.is_empty() {
++        return None;
++    }
++    let Node::Leaf(pane) = &win.root else {
++        return None;
++    };
++    if pane.dead {
++        return None;
++    }
++    let term = pane.term.lock().ok()?;
++    if term.screen().title() != "zsh-idle" || term.screen().alternate_screen() {
++        return None;
++    }
++    Some(pane)
++}
++
++/// Validate and inject in the single server event-loop turn. No list/target race.
++pub(crate) fn claim(app: &mut AppState, lease: &mut Option<Claim>, pid: u32, cwd: &str) -> String {
++    if lease
++        .as_ref()
++        .is_some_and(|c| crate::platform::process_is_alive(c.pid))
++    {
++        return "SKIP\n".into();
++    }
++    let Some(pane) = idle_pane(app) else {
++        return "SKIP\n".into();
++    };
++    let version = pane.data_version.load(std::sync::atomic::Ordering::Relaxed);
++    if !crate::host_cwd::valid_cwd(cwd) || !Path::new(cwd).is_dir() {
++        return "FAILED invalid cwd\n".into();
++    }
++    let Ok(msys) = windows_path_to_msys(cwd) else {
++        return "FAILED unsupported cwd\n".into();
++    };
++    *lease = Some(Claim {
++        pid,
++        cwd: cwd.into(),
++        version,
++    });
++    app.active_idx = 0;
++    app.windows[0].active_path.clear();
++    let command = format!("builtin cd -- {} && clear", shell_quote(&msys));
++    let result = crate::input::send_paste_to_active(app, &command)
++        .and_then(|_| crate::input::send_key_to_active(app, "enter"));
++    match result {
++        Ok(()) => "CLAIMED\n".into(),
++        Err(e) => format!("FAILED pool input: {e}\n"),
++    }
++}
++
++pub(crate) fn ready(app: &AppState, lease: Option<&Claim>, pid: u32) -> String {
++    let Some(lease) = lease.filter(|c| c.pid == pid) else {
++        return "FAILED no pool claim\n".into();
++    };
++    let Some(pane) = idle_pane(app) else {
++        return "WAIT\n".into();
++    };
++    let announced = pane
++        .term
++        .lock()
++        .ok()
++        .and_then(|t| t.screen().path().map(str::to_owned));
++    let current = announced
++        .as_deref()
++        .and_then(|p| crate::wsl_path::osc_cwd_to_windows(p, None))
++        .unwrap_or_else(|| crate::format::expand_format("#{pane_current_path}", app));
++    if pane.data_version.load(std::sync::atomic::Ordering::Relaxed) > lease.version
++        && crate::util::same_dir(&current, &lease.cwd)
++    {
++        "READY\n".into()
++    } else {
++        "WAIT\n".into()
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    #[test]
++    fn pool_paths_and_shell_quoting() {
++        assert_eq!(
++            windows_path_to_msys(r"D:\测试 dir\it's").unwrap(),
++            "/d/测试 dir/it's"
++        );
++        assert_eq!(windows_path_to_msys(r"\\?\C:\dir").unwrap(), "/c/dir");
++        assert_eq!(
++            windows_path_to_msys(r"\\?\UNC\host\share").unwrap(),
++            "//host/share"
++        );
++        assert_eq!(shell_quote("it's $HOME;`cmd`"), "'it'\\''s $HOME;`cmd`'");
++        assert!(windows_path_to_msys("C:relative").is_err());
++    }
++    #[test]
++    fn pool_arguments_reject_extra_and_missing_values() {
++        for args in [
++            vec!["-c".into()],
++            vec!["extra".into()],
++            vec!["--unknown".into()],
++        ] {
++            assert!(parse_cwd(&args).is_err());
++        }
++        assert!(parse_cwd(&[]).unwrap().is_dir());
++        assert_eq!(
++            parse_cwd(&["-c".into(), ".".into()]).unwrap(),
++            parse_cwd(&[]).unwrap()
++        );
++    }
++    #[cfg(windows)]
++    #[test]
++    fn pool_reservation_is_exclusive_and_released_on_drop() {
++        let path = env::temp_dir().join(format!("psmux-pool-lock-{}.test", std::process::id()));
++        let first = Reservation::acquire(&path).unwrap().unwrap();
++        assert!(Reservation::acquire(&path).unwrap().is_none());
++        drop(first);
++        drop(Reservation::acquire(&path).unwrap().unwrap());
++        std::fs::remove_file(path).unwrap();
++    }
++}
+diff --git a/tests-rs/test_issue615_warm_claim_cwd_hint.rs b/tests-rs/test_issue615_warm_claim_cwd_hint.rs
+index 85e8d2f..bd05a37 100644
+--- a/tests-rs/test_issue615_warm_claim_cwd_hint.rs
++++ b/tests-rs/test_issue615_warm_claim_cwd_hint.rs
+@@ -175,6 +175,115 @@ fn current_path(app: &crate::types::AppState) -> String {
+     crate::format::expand_format("#{pane_current_path}", app)
+ }
+ 
++#[test]
++fn host_cwd_follows_active_pane_and_ignores_background_announcements() {
++    let a = make_pane(None);
++    let mut b = make_pane(None);
++    b.id = 1;
++    a.term.lock().unwrap().process(b"\x1b]9;9;C:\\active\x1b\\");
++    b.term.lock().unwrap().process(b"\x1b]9;9;D:\\background\x1b\\");
++    let mut app = app_with(a);
++    let a = std::mem::replace(&mut app.windows[0].root, crate::types::Node::Split {
++        kind: crate::types::LayoutKind::Horizontal,
++        sizes: vec![40, 40],
++        children: vec![],
++    });
++    if let crate::types::Node::Split { children, .. } = &mut app.windows[0].root {
++        children.extend([a, crate::types::Node::Leaf(b)]);
++    }
++    app.windows[0].active_path = vec![0];
++    app.set_titles = false;
++    app.status_visible = false;
++    let formats = crate::server::helpers::expand_status_formats(&app, "");
++    assert_eq!(formats.host_cwd.as_deref(), Some(r"C:\active"));
++    assert_eq!(formats.host_title, None);
++    if let crate::types::Node::Split { children, .. } = &app.windows[0].root {
++        if let crate::types::Node::Leaf(p) = &children[1] {
++            p.term.lock().unwrap().process(b"\x1b]9;9;D:\\changed\x1b\\");
++        }
++    }
++    assert_eq!(crate::server::helpers::expand_status_formats(&app, "").host_cwd.as_deref(), Some(r"C:\active"));
++    app.windows[0].active_path = vec![1];
++    let formats = crate::server::helpers::expand_status_formats(&app, "");
++    assert_eq!(formats.host_cwd.as_deref(), Some(r"D:\changed"));
++    let mut json = String::from("{\"existing\":true}");
++    crate::server::helpers::append_host_cwd_json(&mut json, formats.host_cwd.as_deref());
++    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
++    assert_eq!(value["host_cwd"], r"D:\changed");
++}
++
++#[test]
++fn host_cwd_keeps_shell_announcement_over_foreground_process_cwd() {
++    // The process reading can be a wrapper/TUI's stale startup directory.
++    let pane = make_pane(Some(std::process::id()));
++    pane.term.lock().unwrap().process(b"\x1b]9;9;C:\\shell-announced\x1b\\");
++    let app = app_with(pane);
++    assert_eq!(crate::server::helpers::expand_status_formats(&app, "").host_cwd.as_deref(), Some(r"C:\shell-announced"));
++}
++
++#[test]
++fn host_cwd_without_shell_integration_uses_existing_current_path() {
++    let app = app_with(make_pane(Some(std::process::id())));
++    assert_eq!(crate::server::helpers::expand_status_formats(&app, "").host_cwd, Some(current_path(&app)));
++}
++
++fn zsh_pool_test_app() -> crate::types::AppState {
++    let pane = make_pane(None);
++    pane.term.lock().unwrap().process(b"\x1b]2;zsh-idle\x07");
++    let mut app = app_with(pane);
++    app.session_name = "zsh-unit".into();
++    app
++}
++
++#[test]
++fn zsh_pool_rejects_attached_busy_dead_and_alternate_screen_panes() {
++    let cwd = std::env::current_dir().unwrap().to_string_lossy().into_owned();
++    for state in 0..5 {
++        let mut app = zsh_pool_test_app();
++        match state {
++            0 => app.attached_clients = 1,
++            1 => if let crate::types::Node::Leaf(p) = &app.windows[0].root { p.term.lock().unwrap().process(b"\x1b]2;zsh-busy\x07"); },
++            2 => if let crate::types::Node::Leaf(p) = &mut app.windows[0].root { p.dead = true; },
++            3 => if let crate::types::Node::Leaf(p) = &app.windows[0].root { p.term.lock().unwrap().process(b"\x1b[?1049h"); },
++            _ => app.session_name = "unrelated".into(),
++        }
++        let mut lease = None;
++        assert_eq!(crate::zsh_pool::claim(&mut app, &mut lease, std::process::id(), &cwd), "SKIP\n");
++        assert!(lease.is_none());
++    }
++}
++
++#[test]
++#[cfg(windows)]
++fn zsh_pool_claim_is_atomic_and_ready_requires_updated_cwd() {
++    let cwd = std::env::current_dir().unwrap().to_string_lossy().into_owned();
++    let mut app = zsh_pool_test_app();
++    let mut lease = None;
++    let pid = std::process::id();
++    assert_eq!(crate::zsh_pool::claim(&mut app, &mut lease, pid, &cwd), "CLAIMED\n");
++    assert_eq!(crate::zsh_pool::claim(&mut app, &mut lease, pid, &cwd), "SKIP\n");
++    assert_eq!(crate::zsh_pool::ready(&app, lease.as_ref(), pid), "WAIT\n");
++    assert_eq!(crate::zsh_pool::ready(&app, lease.as_ref(), pid + 1), "FAILED no pool claim\n");
++    if let crate::types::Node::Leaf(p) = &app.windows[0].root {
++        p.term.lock().unwrap().process(format!("\x1b]9;9;{cwd}\x1b\\").as_bytes());
++        p.data_version.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
++    }
++    assert_eq!(crate::zsh_pool::ready(&app, lease.as_ref(), pid), "READY\n");
++}
++
++#[test]
++fn zsh_pool_rejects_multi_pane_sessions_without_changing_focus() {
++    let mut app = zsh_pool_test_app();
++    let root = std::mem::replace(&mut app.windows[0].root, crate::types::Node::Split {
++        kind: crate::types::LayoutKind::Horizontal, sizes: vec![50, 50], children: vec![],
++    });
++    if let crate::types::Node::Split { children, .. } = &mut app.windows[0].root { children.extend([root, crate::types::Node::Leaf(make_pane(None))]); }
++    app.windows[0].active_path = vec![1];
++    let cwd = std::env::current_dir().unwrap().to_string_lossy().into_owned();
++    assert_eq!(crate::zsh_pool::claim(&mut app, &mut None, std::process::id(), &cwd), "SKIP\n");
++    assert_eq!(app.windows[0].active_path, vec![1]);
++}
++
+ /// A real, live process parked in `dir`, so the PEB reading the format path
+ /// takes is a genuine one rather than a stub. Killed by `Drop`.
+ #[cfg(windows)]

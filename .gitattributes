@@ -1,0 +1,9 @@
+# Normalize line endings to LF in the repository and in the working tree.
+#
+# The psmux/ fork tracks upstream's LF sources. Without this, a Windows
+# core.autocrlf=true setting rewrites every line on commit and buries real
+# changes under whole-file CRLF diffs.
+#
+# Applies to psmux/ as well; psmux/.gitattributes still wins for the paths it
+# declares as binary (*.bin, *.ico).
+* text=auto eol=lf

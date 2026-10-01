@@ -1,0 +1,12 @@
+[package]
+name = "psmux-zsh"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Persistent MSYS2 Zsh session reuse for Windows Terminal, built on psmux"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

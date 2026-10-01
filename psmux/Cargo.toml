@@ -1,0 +1,133 @@
+[package]
+name = "psmux"
+version = "3.3.8"
+edition = "2021"
+description = "Terminal multiplexer for Windows - tmux alternative for PowerShell and Windows Terminal"
+license = "MIT"
+repository = "https://github.com/psmux/psmux"
+readme = "README.md"
+keywords = ["terminal", "multiplexer", "tmux", "windows", "powershell"]
+categories = ["command-line-utilities"]
+
+[workspace]
+members = [".", "crates/portable-pty-psmux", "crates/vt100-psmux"]
+exclude = [
+    "target/",
+    "release/",
+    "tests/",
+    "tests-rs/",
+    "packages/",
+    "psmux-windows-x86_64/",
+    ".github/",
+    "scripts/",
+    "scoop/",
+    "examples/",
+    "*.txt",
+]
+
+# Disable auto-discovery of integration tests from tests/ directory
+[[test]]
+name = "test_vt100_mouse"
+path = "tests-rs/test_vt100_mouse.rs"
+
+[[test]]
+name = "test_issue155_sgr_attrs"
+path = "tests-rs/test_issue155_sgr_attrs.rs"
+
+[[test]]
+name = "test_issue155_rendering"
+path = "tests-rs/test_issue155_rendering.rs"
+
+[[test]]
+name = "test_issue201_rename_dialog"
+path = "tests-rs/test_issue201_rename_dialog.rs"
+
+[[test]]
+name = "test_issue269_osc94_dropped"
+path = "tests-rs/test_issue269_osc94_dropped.rs"
+
+[[test]]
+name = "test_h1_osc52_clipboard_capture"
+path = "tests-rs/test_h1_osc52_clipboard_capture.rs"
+
+[[test]]
+name = "test_h1_osc52_end_to_end"
+path = "tests-rs/test_h1_osc52_end_to_end.rs"
+
+[[test]]
+name = "test_issue299_osc_command_state"
+path = "tests-rs/test_issue299_osc_command_state.rs"
+
+[[test]]
+name = "test_issue299_pwsh_snippet_integration"
+path = "tests-rs/test_issue299_pwsh_snippet_integration.rs"
+
+[[test]]
+name = "test_pr469_osc_command_safety"
+path = "tests-rs/test_pr469_osc_command_safety.rs"
+
+[[test]]
+name = "test_issue494_copymode_freeze"
+path = "tests-rs/test_issue494_copymode_freeze.rs"
+
+[[test]]
+name = "test_issue639_wide_char_clear"
+path = "tests-rs/test_issue639_wide_char_clear.rs"
+
+[[test]]
+name = "test_codepoint_widths"
+path = "tests-rs/test_codepoint_widths.rs"
+
+[dev-dependencies]
+parking_lot = "0.12.5"
+
+# Embeds the application icon and the VS_VERSIONINFO block into the .exe
+# (issue #620). Windows hosts only: this is what build.rs's #[cfg(windows)]
+# arm links against. default-features would pull in a whole toml stack purely
+# to read `[package.metadata.winresource]`, which build.rs does not use because
+# it sets every field explicitly.
+[target.'cfg(windows)'.build-dependencies]
+winresource = { version = "=0.1.31", default-features = false }
+
+# Windows only
+[target.'cfg(not(windows))'.dependencies]
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_System_Memory",
+    "Win32_System_DataExchange",
+    "Win32_Storage_FileSystem",
+] }
+
+[[bin]]
+name = "psmux"
+path = "src/main.rs"
+
+[[bin]]
+name = "pmux"
+path = "src/main.rs"
+
+[[bin]]
+name = "tmux"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.30.2"
+crossterm = "0.29.0"
+portable-pty = { version = "0.9.7", path = "crates/portable-pty-psmux", package = "portable-pty-psmux" }
+which = "8.0.6"
+chrono = "0.4.45"
+vt100 = { version = "0.16.13", path = "crates/vt100-psmux", package = "vt100-psmux" }
+unicode-width = "0.2.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+regex = "1.13.1"
+glob = "0.3.4"
+anyhow = "1.0.104"
+base64 = "0.23.1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = "symbols"
